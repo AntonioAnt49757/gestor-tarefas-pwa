@@ -1,22 +1,24 @@
-# Ignorar dependências (frontend e backend)
+# Dependencies
 node_modules/
 backend/node_modules/
 
-# Ficheiros de build
+# Build outputs
 dist/
 build/
 
-# Ficheiros de sistema
+# Environment files
+.env
+.env.local
+.env.production
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
 .DS_Store
 Thumbs.db
 
 # Logs
-npm-debug.log*
 *.log
-
-# IDEs
-.vscode/
-.idea/
-
-# Ambiente (se usares .env)
-.env
+npm-debug.log*
