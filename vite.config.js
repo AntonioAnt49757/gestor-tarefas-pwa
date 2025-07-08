@@ -1,16 +1,31 @@
 import { defineConfig } from 'vite';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 export default defineConfig({
-  server: {
-    port: 5173,
-    host: 'localhost'
-  },
   build: {
-    outDir: 'dist',
-    assetsDir: 'assets',
-    sourcemap: true
+    target: 'es2015',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'lit-core': ['lit', '@lit/reactive-element'],
+          'lit-html': ['lit-html', 'lit-element']
+        }
+      }
+    },
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: false,
+        drop_debugger: true
+      }
+    }
   },
-  optimizeDeps: {
-    include: ['lit']
-  }
+  plugins: [
+    visualizer({
+      filename: './dist/stats.html',
+      open: true,
+      gzipSize: true,
+      brotliSize: true
+    })
+  ]
 });

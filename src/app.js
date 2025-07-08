@@ -3,6 +3,7 @@ import './components/auth-form.js';
 import './components/register-form.js';
 import './components/task-form.js';
 import './components/task-list.js';
+import './components/performance-page.js';
 
 class TaskApp extends LitElement {
   static styles = css`
@@ -255,7 +256,10 @@ class TaskApp extends LitElement {
     tarefas: { type: Array },
     errorMessage: { type: String },
     successMessage: { type: String },
-    loading: { type: Boolean }
+    loading: { type: Boolean },
+    // Propriedades para performance
+    performanceMetrics: { type: Object },
+    measurementActive: { type: Boolean }
   };
 
   constructor() {
@@ -269,6 +273,19 @@ class TaskApp extends LitElement {
     this.errorMessage = '';
     this.successMessage = '';
     this.loading = false;
+    
+    // Inicialização das métricas de performance
+    this.performanceMetrics = {
+      componentRenderTimes: {},
+      apiResponseTimes: {},
+      cacheHitRatio: 0,
+      bundleAnalysis: {},
+      coreWebVitals: {},
+      serviceWorkerMetrics: {}
+    };
+    this.measurementActive = false;
+    this._initPerformanceTracking();
+    this._initServiceWorkerCommunication();
   }
 
   connectedCallback() {
@@ -280,13 +297,353 @@ class TaskApp extends LitElement {
       this.token = token;
       this.username = username;
       this.loggedIn = true;
+      this._sendTokenToServiceWorker(); // Enviar token para SW
       this._carregarTarefas();
     }
   }
 
+  // ========== MÉTODOS DE PERFORMANCE TRACKING ==========
+
+  _initPerformanceTracking() {
+    console.log('🚀 Inicializando performance tracking...');
+    
+    // 1. Medir Core Web Vitals
+    this._trackCoreWebVitals();
+    
+    // 2. Medir Performance das APIs
+    this._trackApiPerformance();
+    
+    // 3. Medir Render Performance
+    this._trackRenderPerformance();
+    
+    // 4. Análise do Bundle
+    this._analyzeBundleSize();
+  }
+
+  _trackCoreWebVitals() {
+    // Largest Contentful Paint (LCP)
+    try {
+      new PerformanceObserver((entryList) => {
+        const entries = entryList.getEntries();
+        const lastEntry = entries[entries.length - 1];
+        this.performanceMetrics.coreWebVitals.lcp = Math.round(lastEntry.startTime);
+        console.log('📊 LCP (Largest Contentful Paint):', lastEntry.startTime + 'ms');
+        this.requestUpdate();
+      }).observe({ entryTypes: ['largest-contentful-paint'] });
+    } catch (e) {
+      console.warn('⚠️ LCP tracking not supported');
+    }
+
+    // First Input Delay (FID)
+    try {
+      new PerformanceObserver((entryList) => {
+        const firstInput = entryList.getEntries()[0];
+        const fid = firstInput.processingStart - firstInput.startTime;
+        this.performanceMetrics.coreWebVitals.fid = Math.round(fid);
+        console.log('📊 FID (First Input Delay):', fid + 'ms');
+        this.requestUpdate();
+      }).observe({ entryTypes: ['first-input'] });
+    } catch (e) {
+      console.warn('⚠️ FID tracking not supported');
+    }
+
+    // Cumulative Layout Shift (CLS)
+    try {
+      let clsValue = 0;
+      new PerformanceObserver((entryList) => {
+        for (const entry of entryList.getEntries()) {
+          if (!entry.hadRecentInput) {
+            clsValue += entry.value;
+          }
+        }
+        this.performanceMetrics.coreWebVitals.cls = Math.round(clsValue * 1000) / 1000;
+        console.log('📊 CLS (Cumulative Layout Shift):', clsValue);
+        this.requestUpdate();
+      }).observe({ entryTypes: ['layout-shift'] });
+    } catch (e) {
+      console.warn('⚠️ CLS tracking not supported');
+    }
+  }
+
+  _trackApiPerformance() {
+    
+    // Override do fetch para medir APIs
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const startTime = performance.now();
+      const url = args[0];
+      
+      try {
+        const response = await originalFetch(...args);
+        const endTime = performance.now();
+        const duration = Math.round(endTime - startTime);
+        
+        // Guardar métricas de API
+        if (url.includes('localhost:3000')) {
+          const endpoint = url.split('/').pop();
+          if (!this.performanceMetrics.apiResponseTimes[endpoint]) {
+            this.performanceMetrics.apiResponseTimes[endpoint] = [];
+          }
+          this.performanceMetrics.apiResponseTimes[endpoint].push(duration);
+          
+          console.log(`⏱️ API ${endpoint}: ${duration}ms`);
+          this.requestUpdate();
+        }
+        
+        return response;
+      } catch (error) {
+        const endTime = performance.now();
+        const duration = Math.round(endTime - startTime);
+        console.log(`❌ API Error ${url}: ${duration}ms`);
+        throw error;
+      }
+    };
+  }
+
+  _trackRenderPerformance() {
+    // Medir tempo de render dos componentes
+    const originalRender = this.render;
+    this.render = () => {
+      const startTime = performance.now();
+      const result = originalRender.call(this);
+      const endTime = performance.now();
+      const duration = Math.round(endTime - startTime);
+      
+      this.performanceMetrics.componentRenderTimes.mainApp = duration;
+      console.log(`🎨 Main App Render: ${duration}ms`);
+      
+      return result;
+    };
+  }
+
+  async _analyzeBundleSize() {
+    try {
+      // Calcular tamanho aproximado dos recursos carregados
+      const resources = performance.getEntriesByType('resource');
+      let totalSize = 0;
+      let jsSize = 0;
+      let cssSize = 0;
+      
+      resources.forEach(resource => {
+        if (resource.transferSize) {
+          totalSize += resource.transferSize;
+          
+          if (resource.name.includes('.js')) {
+            jsSize += resource.transferSize;
+          } else if (resource.name.includes('.css')) {
+            cssSize += resource.transferSize;
+          }
+        }
+      });
+      
+      this.performanceMetrics.bundleAnalysis = {
+        totalSize: Math.round(totalSize / 1024), // KB
+        jsSize: Math.round(jsSize / 1024),
+        cssSize: Math.round(cssSize / 1024),
+        resourceCount: resources.length
+      };
+      
+      console.log('📦 Bundle Analysis:', this.performanceMetrics.bundleAnalysis);
+      this.requestUpdate();
+    } catch (error) {
+      console.error('❌ Erro na análise do bundle:', error);
+    }
+  }
+
+  // Método para exportar relatório completo
+  generatePerformanceReport() {
+    console.log('📊 Gerando relatório de performance...');
+    
+    // Primeiro solicitar métricas atualizadas do Service Worker
+    this._requestServiceWorkerMetrics();
+    
+    // Pequeno delay para receber as métricas
+    setTimeout(() => {
+      const navigation = performance.getEntriesByType('navigation')[0];
+      
+      const report = {
+        timestamp: new Date().toISOString(),
+        
+        // Core Web Vitals
+        coreWebVitals: this.performanceMetrics.coreWebVitals,
+        
+        // Timing de navegação
+        navigationTiming: {
+          pageLoadTime: Math.round(navigation.loadEventEnd - navigation.fetchStart),
+          domContentLoaded: Math.round(navigation.domContentLoadedEventEnd - navigation.fetchStart),
+          timeToFirstByte: Math.round(navigation.responseStart - navigation.requestStart),
+          domInteractive: Math.round(navigation.domInteractive - navigation.fetchStart)
+        },
+        
+        // Performance das APIs
+        apiPerformance: this.performanceMetrics.apiResponseTimes,
+        
+        // Análise do Bundle
+        bundleAnalysis: this.performanceMetrics.bundleAnalysis,
+        
+        // Render Performance
+        renderPerformance: this.performanceMetrics.componentRenderTimes,
+        
+        // Métricas do Service Worker
+        serviceWorkerMetrics: this.performanceMetrics.serviceWorkerMetrics,
+        
+        // Informações do dispositivo
+        deviceInfo: {
+          userAgent: navigator.userAgent,
+          language: navigator.language,
+          platform: navigator.platform,
+          connectionType: navigator.connection?.effectiveType || 'unknown',
+          memory: navigator.deviceMemory || 'unknown',
+          serviceWorkerSupported: 'serviceWorker' in navigator,
+          cacheStorageSupported: 'caches' in window
+        }
+      };
+      
+      console.log('📊 RELATÓRIO COMPLETO DE PERFORMANCE:', report);
+      
+      // Guardar no localStorage para análise
+      localStorage.setItem('performanceReport', JSON.stringify(report, null, 2));
+      
+      // Mostrar resumo
+      this._showPerformanceSummary(report);
+      
+      return report;
+    }, 500);
+  }
+
+  _showPerformanceSummary(report) {
+    const swMetrics = report.serviceWorkerMetrics;
+    const summary = `
+📊 RESUMO DE PERFORMANCE:
+
+🌐 NAVEGAÇÃO:
+• Tempo de Carregamento: ${report.navigationTiming.pageLoadTime}ms
+• LCP: ${report.coreWebVitals.lcp || 'N/A'}ms
+• FID: ${report.coreWebVitals.fid || 'N/A'}ms
+• CLS: ${report.coreWebVitals.cls || 'N/A'}
+
+📦 RECURSOS:
+• Bundle Total: ${report.bundleAnalysis.totalSize}KB
+• Recursos Carregados: ${report.bundleAnalysis.resourceCount}
+
+🔧 SERVICE WORKER:
+• Cache Hit Ratio: ${swMetrics?.cacheHitRatio ? (swMetrics.cacheHitRatio * 100).toFixed(1) + '%' : 'N/A'}
+• Tempo Médio Resposta: ${swMetrics?.avgResponseTime || 'N/A'}ms
+• Requests Totais: ${swMetrics?.networkRequests || 'N/A'}
+
+💾 DADOS GUARDADOS:
+• Relatório completo salvo no localStorage
+• Abra DevTools → Application → Local Storage para ver
+    `;
+    
+    console.log(summary);
+    alert(summary);
+  }
+
+  // ========== COMUNICAÇÃO COM SERVICE WORKER ==========
+
+  _initServiceWorkerCommunication() {
+    if ('serviceWorker' in navigator) {
+      console.log('🔧 Inicializando comunicação com Service Worker...');
+      
+      // Escutar mensagens do Service Worker
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        this._handleServiceWorkerMessage(event.data);
+      });
+
+      // Registar Service Worker se não estiver registado
+      this._registerServiceWorker();
+    } else {
+      console.warn('⚠️ Service Worker não suportado neste browser');
+    }
+  }
+
+  async _registerServiceWorker() {
+    try {
+      const registration = await navigator.serviceWorker.register('/service-worker.js');
+      console.log('✅ Service Worker registado:', registration.scope);
+      
+      // Enviar token quando houver
+      if (this.token) {
+        this._sendTokenToServiceWorker();
+      }
+    } catch (error) {
+      console.error('❌ Erro ao registar Service Worker:', error);
+    }
+  }
+
+  _handleServiceWorkerMessage(data) {
+    console.log('📨 Mensagem recebida do Service Worker:', data);
+    
+    switch (data.type) {
+      case 'SW_PERFORMANCE_METRICS':
+        this.performanceMetrics.serviceWorkerMetrics = data.data;
+        console.log('📊 Métricas SW atualizadas:', data.data);
+        this.requestUpdate();
+        break;
+
+      case 'TASK_SAVED_OFFLINE':
+        this.successMessage = '📱 Tarefa guardada offline - será sincronizada automaticamente';
+        setTimeout(() => this.successMessage = '', 4000);
+        this._carregarTarefas(); // Recarregar para mostrar tarefa offline
+        break;
+
+      case 'TASK_SYNCED':
+        this.successMessage = '🔄 Tarefa sincronizada com sucesso!';
+        setTimeout(() => this.successMessage = '', 3000);
+        this._carregarTarefas(); // Recarregar após sincronização
+        break;
+
+      case 'SYNC_COMPLETED':
+        if (data.successful > 0) {
+          this.successMessage = `✅ ${data.successful} tarefas sincronizadas com sucesso!`;
+          setTimeout(() => this.successMessage = '', 4000);
+          this._carregarTarefas();
+        }
+        break;
+
+      case 'SYNC_ERROR':
+        this.errorMessage = '❌ Erro na sincronização offline: ' + data.error;
+        setTimeout(() => this.errorMessage = '', 5000);
+        break;
+
+      case 'CACHES_CLEARED':
+        this.successMessage = '🧹 Cache limpo com sucesso!';
+        setTimeout(() => this.successMessage = '', 3000);
+        break;
+
+      default:
+        console.log('📝 Mensagem SW não reconhecida:', data);
+    }
+  }
+
+  _sendTokenToServiceWorker() {
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SET_TOKEN',
+        token: this.token
+      });
+      console.log('🔑 Token enviado para Service Worker');
+    }
+  }
+
+  _requestServiceWorkerMetrics() {
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'GET_METRICS'
+      });
+      console.log('📊 Solicitando métricas do Service Worker...');
+    } else {
+      console.warn('⚠️ Service Worker não disponível para solicitar métricas');
+    }
+  }
+
+  // ========== MÉTODOS ORIGINAIS DA APLICAÇÃO ==========
+
   _navegar(pagina) {
     this.currentPage = pagina;
     this._limparMensagens();
+    console.log('🧭 Navegando para:', pagina);
   }
 
   _mudarAuthMode(mode) {
@@ -313,6 +670,9 @@ class TaskApp extends LitElement {
     localStorage.setItem('username', this.username);
     
     console.log('🔍 DEBUG - Token guardado no localStorage:', localStorage.getItem('token'));
+    
+    // Enviar token para Service Worker
+    this._sendTokenToServiceWorker();
     
     this._limparMensagens();
     this._carregarTarefas();
@@ -343,6 +703,7 @@ class TaskApp extends LitElement {
     this.tarefas = [];
     this.currentPage = 'tarefas';
     this._limparMensagens();
+    console.log('🚪 Utilizador fez logout');
   }
 
   async _carregarTarefas() {
@@ -384,8 +745,6 @@ class TaskApp extends LitElement {
 
     // 🔍 DEBUG - Verificar token
     console.log('🔍 DEBUG - Token atual:', this.token);
-    console.log('🔍 DEBUG - Token localStorage:', localStorage.getItem('token'));
-    console.log('🔍 DEBUG - Username:', this.username);
     console.log('🔍 DEBUG - Tarefa a enviar:', tarefa);
 
     // Verificar se tem token
@@ -403,10 +762,6 @@ class TaskApp extends LitElement {
       const method = isEdit ? 'PUT' : 'POST';
 
       console.log(`🔍 DEBUG - ${method} para:`, url);
-      console.log('🔍 DEBUG - Headers:', {
-        'Authorization': `Bearer ${this.token}`,
-        'Content-Type': 'application/json'
-      });
 
       const resposta = await fetch(url, {
         method: method,
@@ -565,6 +920,11 @@ class TaskApp extends LitElement {
             @click=${() => this._navegar('sobre')}>
             ℹ️ Sobre o Projeto
           </button>
+          <button 
+            class="nav-tab ${this.currentPage === 'performance' ? 'active' : ''}"
+            @click=${() => this._navegar('performance')}>
+            📊 Performance
+          </button>
         </div>
 
         ${this.loading ? html`<div class="loading">⏳ Carregando...</div>` : ''}
@@ -578,6 +938,14 @@ class TaskApp extends LitElement {
             @tarefa-removida=${this._removerTarefa}
             @tarefa-edit=${this._editarTarefa}>
           </task-list>
+        ` : ''}
+
+        ${this.currentPage === 'performance' ? html`
+          <performance-page 
+            .token=${this.token}
+            .performanceMetrics=${this.performanceMetrics}
+            @generate-report=${this.generatePerformanceReport}>
+          </performance-page>
         ` : ''}
 
         ${this.currentPage === 'sobre' ? html`

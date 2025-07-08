@@ -1,112 +1,170 @@
-// service-worker.js
-const CACHE_NAME = 'gestor-tarefas-v1';
-const OFFLINE_CACHE_NAME = 'offline-tarefas-v1';
+// service-worker.js - VERSÃO CORRETA PARA PWA
+const CACHE_NAME = 'gestor-tarefas-v2';
+const OFFLINE_CACHE_NAME = 'offline-tarefas-v2';
+const API_CACHE_NAME = 'api-cache-v2';
 
-// Recursos para cache
-const urlsToCache = [
+// Recursos críticos para cache imediato
+const CRITICAL_RESOURCES = [
   '/',
   '/index.html',
   '/src/app.js',
-  '/src/components/auth-form.js',
-  '/src/components/register-form.js',
-  '/src/components/task-form.js',
-  '/src/components/task-list.js'
+  '/manifest.json'
 ];
 
-// Instalar Service Worker
-self.addEventListener('install', event => {
-  console.log('🔧 Service Worker: Instalando...');
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => {
-        console.log('📦 Cache aberto');
-        return cache.addAll(urlsToCache);
-      })
-      .then(() => {
-        console.log('✅ Recursos em cache');
-        self.skipWaiting();
-      })
-      .catch(error => {
-        console.error('❌ Erro ao fazer cache:', error);
-      })
-  );
-});
+// Recursos para cache sob demanda
+const CACHE_ON_DEMAND = [
+  '/src/components/auth-form.js',
+  '/src/components/register-form.js', 
+  '/src/components/task-form.js',
+  '/src/components/task-list.js',
+  '/src/components/about-page.js'
+];
 
-// Ativar Service Worker
-self.addEventListener('activate', event => {
-  console.log('🚀 Service Worker: Ativando...');
+// Métricas de performance do Service Worker
+let performanceMetrics = {
+  cacheHits: 0,
+  cacheMisses: 0,
+  networkRequests: 0,
+  offlineFallbacks: 0,
+  apiCacheHits: 0,
+  avgResponseTime: 0,
+  requestTimes: []
+};
+
+// Instalar Service Worker com métricas
+self.addEventListener('install', event => {
+  console.log('🔧 Service Worker: Instalando versão otimizada...');
+  
   event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames.map(cacheName => {
-          // Limpar caches antigos
-          if (cacheName !== CACHE_NAME && cacheName !== OFFLINE_CACHE_NAME) {
-            console.log('🧹 Removendo cache antigo:', cacheName);
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    }).then(() => {
-      console.log('✅ Service Worker ativado');
-      self.clients.claim();
+    Promise.all([
+      // Cache recursos críticos
+      caches.open(CACHE_NAME).then(cache => {
+        console.log('📦 Fazendo cache de recursos críticos...');
+        return cache.addAll(CRITICAL_RESOURCES);
+      }),
+      
+      // Inicializar cache de API
+      caches.open(API_CACHE_NAME).then(cache => {
+        console.log('💾 Cache de API inicializado');
+        return Promise.resolve();
+      })
+    ]).then(() => {
+      console.log('✅ Service Worker instalado com sucesso');
+      self.skipWaiting();
+    }).catch(error => {
+      console.error('❌ Erro na instalação:', error);
     })
   );
 });
 
-// Interceptar requests
+// Ativar com limpeza de caches antigas
+self.addEventListener('activate', event => {
+  console.log('🚀 Service Worker: Ativando...');
+  
+  event.waitUntil(
+    Promise.all([
+      // Limpar caches antigas
+      caches.keys().then(cacheNames => {
+        return Promise.all(
+          cacheNames.map(cacheName => {
+            if (cacheName !== CACHE_NAME && 
+                cacheName !== OFFLINE_CACHE_NAME && 
+                cacheName !== API_CACHE_NAME) {
+              console.log('🧹 Removendo cache antiga:', cacheName);
+              return caches.delete(cacheName);
+            }
+          })
+        );
+      }),
+      
+      // Reinicializar métricas
+      self.clients.claim()
+    ]).then(() => {
+      console.log('✅ Service Worker ativado');
+      resetPerformanceMetrics();
+    })
+  );
+});
+
+// Interceptar requests com medição de performance
 self.addEventListener('fetch', event => {
+  const requestStart = performance.now();
   const url = new URL(event.request.url);
   
-  // Apenas interceptar requests HTTP/HTTPS
+  // Apenas processar HTTP/HTTPS
   if (!event.request.url.startsWith('http')) {
     return;
   }
-
-  // Requests para a API (localhost:3000)
+  
+  // Incrementar contador de requests de rede
+  performanceMetrics.networkRequests++;
+  
+  // Determinar estratégia baseada no tipo de request
   if (url.hostname === 'localhost' && url.port === '3000') {
-    event.respondWith(handleApiRequest(event.request));
-  } 
-  // Requests para recursos estáticos
-  else {
-    event.respondWith(handleStaticRequest(event.request));
+    // Requests para API - Network First com cache
+    event.respondWith(handleApiRequest(event.request, requestStart));
+  } else if (CRITICAL_RESOURCES.some(resource => event.request.url.includes(resource))) {
+    // Recursos críticos - Cache First
+    event.respondWith(handleCriticalResource(event.request, requestStart));
+  } else if (CACHE_ON_DEMAND.some(resource => event.request.url.includes(resource))) {
+    // Componentes - Stale While Revalidate
+    event.respondWith(handleComponentRequest(event.request, requestStart));
+  } else {
+    // Outros recursos - Network First
+    event.respondWith(handleGenericRequest(event.request, requestStart));
   }
 });
 
-// Gerir requests para a API
-async function handleApiRequest(request) {
+// Estratégia para API requests
+async function handleApiRequest(request, startTime) {
+  const cacheKey = `api-${request.url}-${request.method}`;
+  
   try {
-    // Tentar fazer o request normal
+    // Tentar rede primeiro
     const response = await fetch(request);
+    const responseTime = performance.now() - startTime;
     
-    // Se for uma criação de tarefa bem-sucedida, fazer cache da resposta
-    if (request.method === 'GET' && request.url.includes('/tarefas') && response.ok) {
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(request, response.clone());
+    updatePerformanceMetrics(responseTime, false);
+    
+    // Cache successful GET requests
+    if (request.method === 'GET' && response.ok) {
+      const cache = await caches.open(API_CACHE_NAME);
+      cache.put(cacheKey, response.clone());
+      performanceMetrics.apiCacheHits++;
     }
     
+    console.log(`⚡ API Network: ${request.url} - ${responseTime.toFixed(2)}ms`);
     return response;
+    
   } catch (error) {
-    console.log('🔄 API offline, a processar...');
+    console.log('📡 API offline, tentando cache...');
     
-    // Se for POST para tarefas (criar tarefa offline) - REQUISITO DO ENUNCIADO
-    if (request.method === 'POST' && request.url.includes('/tarefas')) {
-      return handleOfflineTaskCreation(request);
+    // Fallback para cache se disponível
+    const cache = await caches.open(API_CACHE_NAME);
+    const cachedResponse = await cache.match(cacheKey);
+    
+    if (cachedResponse) {
+      performanceMetrics.cacheHits++;
+      performanceMetrics.offlineFallbacks++;
+      console.log(`💾 API Cache Hit: ${request.url}`);
+      
+      // Adicionar header para identificar cache
+      const response = cachedResponse.clone();
+      response.headers.set('X-Cache-Hit', 'true');
+      response.headers.set('X-Cache-Source', 'service-worker');
+      
+      return response;
     }
     
-    // Para GET de tarefas, tentar cache
-    if (request.method === 'GET' && request.url.includes('/tarefas')) {
-      const cachedResponse = await caches.match(request);
-      if (cachedResponse) {
-        console.log('📱 Usando tarefas do cache offline');
-        return cachedResponse;
-      }
-    }
+    // Última opção: resposta offline
+    performanceMetrics.cacheMisses++;
+    performanceMetrics.offlineFallbacks++;
     
-    // Fallback para erro de rede
     return new Response(
       JSON.stringify({ 
-        error: 'Aplicação offline',
-        offline: true 
+        error: 'Dados não disponíveis offline',
+        offline: true,
+        cachedData: false
       }),
       {
         status: 503,
@@ -116,172 +174,193 @@ async function handleApiRequest(request) {
   }
 }
 
-// Gerir criação de tarefas offline (REQUISITO PRINCIPAL DO ENUNCIADO)
-async function handleOfflineTaskCreation(request) {
-  try {
-    const taskData = await request.json();
+// Estratégia Cache First para recursos críticos
+async function handleCriticalResource(request, startTime) {
+  const cache = await caches.open(CACHE_NAME);
+  const cachedResponse = await cache.match(request);
+  
+  if (cachedResponse) {
+    const responseTime = performance.now() - startTime;
+    updatePerformanceMetrics(responseTime, true);
+    performanceMetrics.cacheHits++;
     
-    // Adicionar marcador de offline
-    taskData.offline = true;
-    taskData.syncPending = true;
-    taskData.offlineId = 'offline_' + Date.now();
+    console.log(`💾 Critical Cache Hit: ${request.url} - ${responseTime.toFixed(2)}ms`);
     
-    // Guardar tarefa no cache offline
-    const offlineCache = await caches.open(OFFLINE_CACHE_NAME);
-    const offlineKey = `offline-task-${taskData.offlineId}`;
-    const offlineResponse = new Response(JSON.stringify(taskData));
-    await offlineCache.put(offlineKey, offlineResponse);
-    
-    console.log('💾 Tarefa guardada offline:', taskData);
-    
-    // Registar para sync quando voltar online
-    if ('serviceWorker' in navigator && 'sync' in window.ServiceWorkerRegistration.prototype) {
-      self.registration.sync.register('sync-offline-tasks');
-    }
-    
-    // Notificar o cliente sobre a tarefa offline
-    self.clients.matchAll().then(clients => {
-      clients.forEach(client => {
-        client.postMessage({
-          type: 'TASK_SAVED_OFFLINE',
-          task: taskData
-        });
-      });
-    });
-    
-    return new Response(
-      JSON.stringify({ 
-        message: 'Tarefa guardada offline - será sincronizada quando voltar online',
-        offline: true,
-        task: taskData
-      }),
-      {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  } catch (error) {
-    console.error('❌ Erro ao guardar tarefa offline:', error);
-    return new Response(
-      JSON.stringify({ error: 'Erro ao guardar offline' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
+    // Marcar como cache hit
+    cachedResponse.headers.set('X-Cache-Hit', 'true');
+    return cachedResponse;
   }
-}
-
-// Gerir requests para recursos estáticos
-async function handleStaticRequest(request) {
+  
+  // Se não estiver em cache, buscar da rede
   try {
-    // Tentar buscar da rede primeiro (Network First)
     const response = await fetch(request);
+    const responseTime = performance.now() - startTime;
     
-    // Se bem-sucedido, atualizar cache
+    updatePerformanceMetrics(responseTime, false);
+    
     if (response.ok) {
-      const cache = await caches.open(CACHE_NAME);
       cache.put(request, response.clone());
     }
     
+    console.log(`⚡ Critical Network: ${request.url} - ${responseTime.toFixed(2)}ms`);
+    return response;
+    
+  } catch (error) {
+    performanceMetrics.cacheMisses++;
+    performanceMetrics.offlineFallbacks++;
+    
+    console.log(`❌ Critical Resource Failed: ${request.url}`);
+    return new Response('Recurso não disponível', { status: 503 });
+  }
+}
+
+// Estratégia Stale While Revalidate para componentes
+async function handleComponentRequest(request, startTime) {
+  const cache = await caches.open(CACHE_NAME);
+  const cachedResponse = await cache.match(request);
+  
+  // Função para buscar da rede e atualizar cache
+  const fetchAndCache = async () => {
+    try {
+      const response = await fetch(request);
+      if (response.ok) {
+        cache.put(request, response.clone());
+      }
+      return response;
+    } catch (error) {
+      console.log(`❌ Falha ao atualizar componente: ${request.url}`);
+      return null;
+    }
+  };
+  
+  if (cachedResponse) {
+    const responseTime = performance.now() - startTime;
+    updatePerformanceMetrics(responseTime, true);
+    performanceMetrics.cacheHits++;
+    
+    console.log(`💾 Component Cache: ${request.url} - ${responseTime.toFixed(2)}ms`);
+    
+    // Atualizar em background
+    fetchAndCache();
+    
+    cachedResponse.headers.set('X-Cache-Hit', 'true');
+    return cachedResponse;
+  }
+  
+  // Se não há cache, buscar da rede
+  return fetchAndCache() || new Response('Componente não disponível', { status: 503 });
+}
+
+// Estratégia genérica Network First
+async function handleGenericRequest(request, startTime) {
+  try {
+    const response = await fetch(request);
+    const responseTime = performance.now() - startTime;
+    
+    updatePerformanceMetrics(responseTime, false);
+    
     return response;
   } catch (error) {
-    // Se falhar, tentar cache
-    const cachedResponse = await caches.match(request);
+    const cache = await caches.open(CACHE_NAME);
+    const cachedResponse = await cache.match(request);
+    
     if (cachedResponse) {
-      console.log('📱 Usando recurso do cache:', request.url);
+      performanceMetrics.cacheHits++;
+      performanceMetrics.offlineFallbacks++;
       return cachedResponse;
     }
     
-    // Fallback para página offline
-    if (request.destination === 'document') {
-      return caches.match('/index.html');
-    }
+    performanceMetrics.cacheMisses++;
+    return new Response('Não disponível offline', { status: 503 });
+  }
+}
+
+// Atualizar métricas de performance
+function updatePerformanceMetrics(responseTime, fromCache) {
+  performanceMetrics.requestTimes.push(responseTime);
+  
+  // Manter apenas últimas 100 medições
+  if (performanceMetrics.requestTimes.length > 100) {
+    performanceMetrics.requestTimes.shift();
+  }
+  
+  // Calcular tempo médio
+  performanceMetrics.avgResponseTime = 
+    performanceMetrics.requestTimes.reduce((a, b) => a + b, 0) / 
+    performanceMetrics.requestTimes.length;
     
-    return new Response('Recurso não disponível offline', {
-      status: 503,
-      statusText: 'Service Unavailable'
+  // Enviar métricas para o cliente a cada 10 requests
+  if (performanceMetrics.networkRequests % 10 === 0) {
+    broadcastMetrics();
+  }
+}
+
+// Enviar métricas para todos os clientes
+function broadcastMetrics() {
+  const metricsReport = {
+    ...performanceMetrics,
+    cacheHitRatio: (performanceMetrics.cacheHits / 
+      (performanceMetrics.cacheHits + performanceMetrics.cacheMisses)) || 0,
+    timestamp: Date.now()
+  };
+  
+  self.clients.matchAll().then(clients => {
+    clients.forEach(client => {
+      client.postMessage({
+        type: 'SW_PERFORMANCE_METRICS',
+        data: metricsReport
+      });
     });
-  }
+  });
+  
+  console.log('📊 SW Metrics:', metricsReport);
 }
 
-// Sincronizar tarefas offline quando voltar online
-self.addEventListener('sync', event => {
-  if (event.tag === 'sync-offline-tasks') {
-    console.log('🔄 Sincronizando tarefas offline...');
-    event.waitUntil(syncOfflineTasks());
-  }
-});
-
-// Função para sincronizar tarefas
-async function syncOfflineTasks() {
-  try {
-    const offlineCache = await caches.open(OFFLINE_CACHE_NAME);
-    const keys = await offlineCache.keys();
-    
-    const syncPromises = [];
-    
-    for (const request of keys) {
-      if (request.url.includes('offline-task-')) {
-        const response = await offlineCache.match(request);
-        const taskData = await response.json();
-        
-        // Remover marcadores offline
-        const cleanTaskData = { ...taskData };
-        delete cleanTaskData.offline;
-        delete cleanTaskData.syncPending;
-        delete cleanTaskData.offlineId;
-        
-        // Tentar enviar para o servidor
-        const syncPromise = fetch('http://localhost:3000/tarefas', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${getStoredToken()}`
-          },
-          body: JSON.stringify(cleanTaskData)
-        }).then(response => {
-          if (response.ok) {
-            // Se bem-sucedido, remover do cache offline
-            return offlineCache.delete(request).then(() => {
-              console.log('✅ Tarefa sincronizada:', cleanTaskData);
-              
-              // Notificar cliente sobre sincronização
-              self.clients.matchAll().then(clients => {
-                clients.forEach(client => {
-                  client.postMessage({
-                    type: 'TASK_SYNCED',
-                    task: taskData
-                  });
-                });
-              });
-            });
-          } else {
-            console.log('❌ Falha ao sincronizar tarefa:', response.status);
-          }
-        }).catch(error => {
-          console.log('❌ Erro na sincronização:', error);
-        });
-        
-        syncPromises.push(syncPromise);
-      }
-    }
-    
-    await Promise.all(syncPromises);
-    console.log('🎉 Sincronização de tarefas concluída');
-  } catch (error) {
-    console.error('❌ Erro na sincronização:', error);
-  }
+// Reset das métricas
+function resetPerformanceMetrics() {
+  performanceMetrics = {
+    cacheHits: 0,
+    cacheMisses: 0,
+    networkRequests: 0,
+    offlineFallbacks: 0,
+    apiCacheHits: 0,
+    avgResponseTime: 0,
+    requestTimes: []
+  };
 }
 
-// Função auxiliar para obter token
-function getStoredToken() {
-  // No contexto do service worker, não temos acesso direto ao localStorage
-  // O token será passado nas mensagens ou obtido via indexedDB se necessário
-  return 'token_placeholder'; // Será melhorado na implementação final
-}
-
-// Escutar mensagens do cliente principal
+// Escutar comandos do cliente
 self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'SET_TOKEN') {
-    // Guardar token para uso nas sincronizações
-    self.currentToken = event.data.token;
+  if (event.data) {
+    switch (event.data.type) {
+      case 'GET_METRICS':
+        broadcastMetrics();
+        break;
+        
+      case 'RESET_METRICS':
+        resetPerformanceMetrics();
+        event.ports[0].postMessage({ success: true });
+        break;
+        
+      case 'CLEAR_CACHE':
+        clearAllCaches().then(() => {
+          event.ports[0].postMessage({ success: true });
+        });
+        break;
+    }
   }
 });
+
+// Limpar todos os caches
+async function clearAllCaches() {
+  const cacheNames = await caches.keys();
+  await Promise.all(cacheNames.map(name => caches.delete(name)));
+  console.log('🧹 Todos os caches limpos');
+}
+
+// Relatório periódico (a cada 30 segundos)
+setInterval(() => {
+  if (performanceMetrics.networkRequests > 0) {
+    broadcastMetrics();
+  }
+}, 30000);

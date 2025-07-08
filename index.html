@@ -321,8 +321,9 @@
     <!-- Aplicação principal -->
     <task-app></task-app>
 
-    <!-- Scripts -->
+    <!-- Script principal - ESTA É A LINHA CRÍTICA -->
     <script type="module" src="/src/app.js"></script>
+    
     <script>
       // Registar Service Worker
       if ('serviceWorker' in navigator) {
@@ -380,7 +381,8 @@
         '/src/components/auth-form.js',
         '/src/components/register-form.js',
         '/src/components/task-form.js',
-        '/src/components/task-list.js'
+        '/src/components/task-list.js',
+        '/src/components/performance-page.js'
       ];
 
       criticalResources.forEach(resource => {
@@ -389,13 +391,6 @@
         link.href = resource;
         document.head.appendChild(link);
       });
-
-      // Otimização: Lazy load de componentes não críticos
-      const observerOptions = {
-        root: null,
-        rootMargin: '50px',
-        threshold: 0.1
-      };
 
       // Adicionar meta tags dinâmicas para SEO
       document.addEventListener('DOMContentLoaded', () => {
